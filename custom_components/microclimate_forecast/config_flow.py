@@ -103,6 +103,16 @@ class MicroclimateOptionsFlow(OptionsFlow):
             # Every optional sensor absent from the form was cleared, not kept.
             for key in OPTIONAL_SENSORS:
                 user_input.setdefault(key, None)
+            new_sensor = user_input[CONF_TEMPERATURE]
+            if new_sensor != self.config_entry.unique_id:
+                others = [
+                    e
+                    for e in self.hass.config_entries.async_entries(DOMAIN)
+                    if e.entry_id != self.config_entry.entry_id and e.unique_id == new_sensor
+                ]
+                if others:
+                    return self.async_abort(reason="already_configured")
+                self.hass.config_entries.async_update_entry(self.config_entry, unique_id=new_sensor)
             return self.async_create_entry(data=user_input)
         current = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(step_id="init", data_schema=vol.Schema(_sensor_schema(current)))

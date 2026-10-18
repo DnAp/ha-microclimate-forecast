@@ -181,3 +181,43 @@ async def test_forecast_outage_is_unavailable_not_crash(hass: HomeAssistant, aio
         await hass.async_block_till_done()
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     assert entry.state.name == "SETUP_RETRY"
+
+
+async def test_switching_the_sensor_relearns_at_once(setup_hass: HomeAssistant):
+    """2026-10-19: the boiler was picked by mistake; switching to the yard sensor kept
+    the boiler's +35° correction for a day, because the stored model was trusted."""
+    hass = setup_hass
+    hass.states.async_set("sensor.boiler", "60", {"unit_of_measurement": "°C", "device_class": "temperature"})
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"name": "Yard", CONF_TEMPERATURE: "sensor.boiler", CONF_LEARNING_DAYS: 30}
+    )
+    entry = result["result"]
+    await hass.async_block_till_done()
+    calls = []
+
+    async def means(_hass, entity_id, _start, _end):
+        calls.append(entity_id)
+        return station_history()
+
+    with patch("custom_components.microclimate_forecast.coordinator.async_hourly_means", side_effect=means):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_TEMPERATURE: "sensor.station_temp", CONF_LEARNING_DAYS: 30}
+        )
+        await hass.async_block_till_done()
+    assert calls == ["sensor.station_temp"]
+    assert entry.unique_id == "sensor.station_temp"
+    assert hass.states.get("weather.yard").attributes["bias_by_hour"]["04"] == pytest.approx(-3.5, abs=0.1)
+
+
+async def test_current_hour_gets_the_station_deviation(setup_hass: HomeAssistant):
+    hass = setup_hass
+    await create_entry(hass)
+    resp = await hass.services.async_call(
+        "weather", "get_forecasts", {"entity_id": "weather.yard", "type": "hourly"}, blocking=True, return_response=True
+    )
+    first = resp["weather.yard"]["forecast"][0]
+    # The 20:00 UTC point is 30 min old: it follows the station's 12.3, not the raw model.
+    assert datetime.fromisoformat(first["datetime"]) == NOW.replace(minute=0)
+    assert first["temperature"] == pytest.approx(12.3, abs=0.6)

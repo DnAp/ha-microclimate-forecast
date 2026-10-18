@@ -510,9 +510,11 @@ def apply_nowcast(
         return None
     offset = observed_now - expected
     for p in points:
-        if p.time <= now or p.temperature is None:
+        # The current hour's point (up to an hour old) is shown as "now" in the
+        # hourly forecast, so it gets the deviation too.
+        if p.time <= now - timedelta(hours=1) or p.temperature is None:
             continue
-        hours = (p.time - now).total_seconds() / 3600
+        hours = abs((p.time - now).total_seconds()) / 3600
         p.temperature = round(p.temperature + offset * math.exp(-hours / tau_hours), 1)
     return round(offset, 2)
 

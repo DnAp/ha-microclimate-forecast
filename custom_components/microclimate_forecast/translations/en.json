@@ -60,6 +60,9 @@
           "learning_days": "How many past days of station history to learn the correction from (7–90)."
         }
       }
+    },
+    "abort": {
+      "already_configured": "This sensor is already used by another Microclimate Forecast entry."
     }
   },
   "entity": {

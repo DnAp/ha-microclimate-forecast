@@ -118,6 +118,10 @@ class MicroclimateCoordinator(TimestampDataUpdateCoordinator[ForecastData]):
     def learning_days(self) -> int:
         return int(self.settings.get(CONF_LEARNING_DAYS, DEFAULT_LEARNING_DAYS))
 
+    def _source(self) -> dict[str, Any]:
+        """What the stored model was learned from — a change means re-learning."""
+        return {"entity": self.settings[CONF_TEMPERATURE], "days": self.learning_days}
+
     def _coords(self) -> tuple[float, float]:
         return float(self.hass.config.latitude), float(self.hass.config.longitude)
 
@@ -127,6 +131,10 @@ class MicroclimateCoordinator(TimestampDataUpdateCoordinator[ForecastData]):
         self._loaded = True
         stored = await self._store.async_load()
         if not stored:
+            return
+        if stored.get("source") != self._source():
+            # Learned from another sensor or window (or by v0.1/v0.2.0, which did not
+            # record it) — worthless for this one; the first update re-learns.
             return
         try:
             if stored.get("bias"):
@@ -164,7 +172,11 @@ class MicroclimateCoordinator(TimestampDataUpdateCoordinator[ForecastData]):
         self.analogs = learn_analogs(build_past_segments(observed, past, tz), now)
         self.learn_error = None
         await self._store.async_save(
-            {"bias": model.as_dict(), "analogs": self.analogs.as_dict() if self.analogs else None}
+            {
+                "source": self._source(),
+                "bias": model.as_dict(),
+                "analogs": self.analogs.as_dict() if self.analogs else None,
+            }
         )
         _LOGGER.debug(
             "Learned over %s days: per-hour MAE %.2f → %.2f, analogs → %s",
