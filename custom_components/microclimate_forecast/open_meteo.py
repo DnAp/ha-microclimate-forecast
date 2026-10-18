@@ -7,7 +7,7 @@ from typing import Any
 
 import aiohttp
 
-from .model import HourPoint
+from .model import HourPoint, PastHour
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
@@ -113,25 +113,41 @@ async def fetch_forecast(
     return points, meta
 
 
+PAST_FIELDS = {
+    "temperature": "temperature_2m_previous_day1",
+    "cloud_cover": "cloud_cover_previous_day1",
+    "wind_speed": "wind_speed_10m_previous_day1",
+    "humidity": "relative_humidity_2m_previous_day1",
+}
+
+
 async def fetch_past_forecasts(
     session: aiohttp.ClientSession, lat: float, lon: float, past_days: int
-) -> dict[datetime, float]:
-    """What the model forecast one day ahead for each past hour (UTC → °C)."""
+) -> dict[datetime, PastHour]:
+    """What the model forecast one day ahead for each past hour (UTC instants)."""
     data = await _get(
         session,
         PREVIOUS_RUNS_URL,
         {
             "latitude": lat,
             "longitude": lon,
-            "hourly": "temperature_2m_previous_day1",
+            "hourly": ",".join(PAST_FIELDS.values()),
             "past_days": past_days,
             "forecast_days": 1,
             "timeformat": "unixtime",
+            "wind_speed_unit": "kmh",
         },
     )
     hourly = data.get("hourly") or {}
-    out: dict[datetime, float] = {}
-    for ts, value in zip(hourly.get("time") or [], hourly.get("temperature_2m_previous_day1") or [], strict=False):
-        if value is not None:
-            out[_utc(ts)] = float(value)
+    out: dict[datetime, PastHour] = {}
+    for i, ts in enumerate(hourly.get("time") or []):
+        temp = _col(hourly, PAST_FIELDS["temperature"], i)
+        if temp is None:
+            continue
+        out[_utc(ts)] = PastHour(
+            temperature=float(temp),
+            cloud_cover=_col(hourly, PAST_FIELDS["cloud_cover"], i),
+            wind_speed=_col(hourly, PAST_FIELDS["wind_speed"], i),
+            humidity=_col(hourly, PAST_FIELDS["humidity"], i),
+        )
     return out

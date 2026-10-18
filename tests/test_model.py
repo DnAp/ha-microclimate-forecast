@@ -131,3 +131,91 @@ def test_nowcast_without_a_reading_changes_nothing():
     apply_bias(pts, None, TZ)
     assert apply_nowcast(pts, None, pts[2].time) is None
     assert all(p.temperature == p.raw_temperature for p in pts)
+
+
+# ── Analogs ──
+
+from custom_components.microclimate_forecast.model import (  # noqa: E402
+    AnalogModel,
+    PastHour,
+    Segment,
+    apply_corrections,
+    build_past_segments,
+    learn_analogs,
+    segment_instants,
+    segment_of,
+    target_segments,
+)
+
+
+def weather_history(days: int = 45):
+    """Clear nights (cloud 0) pool 5° of cold, cloudy ones (cloud 100) only 1°."""
+    past, observed = {}, {}
+    start = datetime(2026, 9, 1, tzinfo=TZ).astimezone(UTC)
+    for h in range(days * 24 + 2):
+        t = start + timedelta(hours=h)
+        local = t.astimezone(TZ)
+        night_of = segment_of(local)[1].toordinal()
+        cloud = 0.0 if night_of % 2 else 100.0
+        past[t] = PastHour(temperature=18.0, cloud_cover=cloud, wind_speed=5.0, humidity=70.0)
+    for h in range(days * 24 + 1):
+        t = start + timedelta(hours=h)
+        mid = (t + timedelta(minutes=30)).astimezone(TZ)
+        kind, anchor = segment_of(mid)
+        cloud = 0.0 if anchor.toordinal() % 2 else 100.0
+        observed[t] = 18.0 + ((-5.0 if cloud == 0 else -1.0) if kind == "night" and 0 <= mid.hour <= 6 else 0.0)
+    return observed, past
+
+
+def test_segments_cover_every_hour_once():
+    seen = set()
+    for kind in ("night", "day"):
+        for t in segment_instants(kind, date(2026, 10, 18), TZ):
+            seen.add(t.astimezone(TZ).hour)
+            assert segment_of(t.astimezone(TZ)) == (kind, date(2026, 10, 18))
+    assert seen == set(range(24))
+
+
+def test_analogs_tell_a_clear_night_from_a_cloudy_one():
+    observed, past = weather_history()
+    model = learn_analogs(build_past_segments(observed, past, TZ), START)
+    assert model is not None and model.mae_corrected < model.mae_raw / 3
+    # A per-hour average would say −3° for both; analogs know which night it is.
+    for cloud, expected in ((0.0, -5.0), (100.0, -1.0)):
+        target = Segment(
+            kind="night", anchor=date(2026, 12, 1), temps=[18.0] * 15, cloud=cloud, wind=5.0, humidity=70.0
+        )
+        corr = model.correction(target)
+        assert corr is not None
+        assert corr[9] == pytest.approx(expected, abs=0.3)  # 03:00
+
+
+def test_partial_segment_matches_on_the_hours_it_has():
+    observed, past = weather_history()
+    model = learn_analogs(build_past_segments(observed, past, TZ), START)
+    temps = [None] * 6 + [18.0] * 9  # a night already under way: 00:00 onwards
+    target = Segment(kind="night", anchor=date(2026, 12, 1), temps=temps, cloud=0.0, wind=5.0, humidity=70.0)
+    assert model.correction(target)[9] == pytest.approx(-5.0, abs=0.3)
+
+
+def test_too_few_analogs_fall_back_to_the_per_hour_bias():
+    observed, past = weather_history(days=3)
+    model = learn_analogs(build_past_segments(observed, past, TZ), START)
+    pts = points_for(1)
+    bias = BiasModel(hours=[-2.0] * 24, samples=[100] * 24, days=3, learned_at=START)
+    assert apply_corrections(pts, model, bias, TZ) == 0
+    assert all(p.temperature == p.raw_temperature - 2.0 for p in pts)
+
+
+def test_corrections_reach_the_points_and_storage_round_trips():
+    observed, past = weather_history()
+    model = learn_analogs(build_past_segments(observed, past, TZ), START)
+    assert AnalogModel.from_dict(model.as_dict()) == model
+    pts = points_for(2)
+    for p in pts:
+        p.cloud_cover, p.wind_speed, p.humidity = 0.0, 5.0, 70.0
+    used = apply_corrections(pts, model, None, TZ)
+    assert used == len(pts)
+    three_am = next(p for p in pts if p.time.astimezone(TZ).hour == 3)
+    assert three_am.temperature == pytest.approx(three_am.raw_temperature - 5.0, abs=0.3)
+    assert set(target_segments(pts, TZ)) >= {("night", date(2026, 10, 18)), ("day", date(2026, 10, 19))}

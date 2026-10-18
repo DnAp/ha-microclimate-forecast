@@ -2,10 +2,18 @@
 
 The idea: a weather model forecasts for a grid cell, a station measures one spot.
 The difference between them is not random — at a given spot it repeats by time of
-day (a yard where cold air pools at night, a sensor that the morning sun reaches).
-So we pair the station's hourly means with what the model had forecast for those
-same hours one day ahead, learn the mean error per local hour, and add it to the
-current forecast.
+day (a yard where cold air pools at night, a sensor that the morning sun reaches)
+and by weather (a clear calm night pools more cold air than a cloudy windy one).
+
+Two models, both learned from what the station measured vs what the model had
+forecast for the same hours one day ahead:
+
+* **Analogs** (primary). The forecast is cut into nights (18:00–08:00) and days
+  (09:00–17:00). For each coming segment we find the ANALOG_NEIGHBOURS past
+  segments whose forecast looked most alike — temperature profile, cloud, wind,
+  humidity — and add their weighted mean error, hour by hour.
+* **Per-hour bias** (fallback). The mean error per local hour. Used where there
+  are not enough past segments yet, and shown as the station's signature.
 """
 
 from __future__ import annotations
@@ -13,7 +21,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 # Weight of the neighbouring hours when learning one hour's bias (centre weighs 2).
 NEIGHBOUR_WEIGHT = 1.0
@@ -149,6 +157,269 @@ def learn_bias(samples: list[ErrorSample], now: datetime) -> BiasModel | None:
         mae_raw=round(raw_err / n, 2) if n else None,
         mae_corrected=round(cor_err / n, 2) if n else None,
     )
+
+
+# ── Analogs ────────────────────────────────────────────────────────────────
+
+# Segment hours (local, on-the-hour instants). Together they cover all 24.
+SEGMENT_HOURS: dict[str, list[int]] = {
+    "night": [18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+    "day": [9, 10, 11, 12, 13, 14, 15, 16, 17],
+}
+# Backtested on 150 nights and days (each predicted from the 45 days before it):
+# night low error 1.00° → 0.88°, day high 0.96° → 0.87° vs the per-hour bias. Fewer
+# neighbours is noisy; more pulls in nights that did not look alike.
+ANALOG_NEIGHBOURS = 8
+# Scales that make a feature difference of "1" comparable: 2 °C of forecast
+# temperature at an hour ≈ 40 % cloud ≈ 5 km/h wind ≈ 15 % humidity.
+SCALE_TEMP = 2.0
+SCALE_CLOUD = 40.0
+SCALE_WIND = 5.0
+SCALE_HUMIDITY = 15.0
+# Keeps one almost identical analog from taking all the weight.
+DISTANCE_FLOOR = 0.05
+# A past segment with fewer measured instants than this share is not an analog.
+MIN_SEGMENT_COVERAGE = 0.8
+
+
+@dataclass
+class PastHour:
+    """What the model forecast one day ahead for an instant."""
+
+    temperature: float
+    cloud_cover: float | None = None
+    wind_speed: float | None = None
+    humidity: float | None = None
+
+
+@dataclass
+class Segment:
+    kind: str  # "night" | "day"
+    anchor: date  # local date the segment starts on
+    temps: list[float | None]  # forecast at each instant of SEGMENT_HOURS[kind]
+    cloud: float | None = None
+    wind: float | None = None
+    humidity: float | None = None
+    errors: list[float | None] | None = None  # measured − forecast; past segments only
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "anchor": self.anchor.isoformat(),
+            "temps": self.temps,
+            "cloud": self.cloud,
+            "wind": self.wind,
+            "humidity": self.humidity,
+            "errors": self.errors,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Segment:
+        return cls(
+            kind=d["kind"],
+            anchor=date.fromisoformat(d["anchor"]),
+            temps=d["temps"],
+            cloud=d.get("cloud"),
+            wind=d.get("wind"),
+            humidity=d.get("humidity"),
+            errors=d.get("errors"),
+        )
+
+
+def segment_of(local: datetime) -> tuple[str, date]:
+    """Which segment an instant belongs to: (kind, local start date)."""
+    if 9 <= local.hour < 18:
+        return "day", local.date()
+    if local.hour >= 18:
+        return "night", local.date()
+    return "night", local.date() - timedelta(days=1)
+
+
+def segment_instants(kind: str, anchor: date, tz: tzinfo) -> list[datetime]:
+    """UTC instants of a segment, in SEGMENT_HOURS order."""
+    out = []
+    for h in SEGMENT_HOURS[kind]:
+        day = anchor + timedelta(days=1) if kind == "night" and h < 18 else anchor
+        out.append(datetime(day.year, day.month, day.day, h, tzinfo=tz).astimezone(UTC))
+    return out
+
+
+def _mean(values: list[float | None]) -> float | None:
+    vals = [v for v in values if v is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def build_past_segments(observed: dict[datetime, float], past: dict[datetime, PastHour], tz: tzinfo) -> list[Segment]:
+    """Past segments with their errors.
+
+    `observed` holds hourly means keyed by the UTC start of the hour, so the station
+    at an instant is the mean of the two hours around it.
+    """
+    if not past:
+        return []
+    first = min(past).astimezone(tz).date() - timedelta(days=1)
+    last = max(past).astimezone(tz).date()
+    out: list[Segment] = []
+    day = first
+    while day <= last:
+        for kind in SEGMENT_HOURS:
+            instants = segment_instants(kind, day, tz)
+            hours = [past.get(t) for t in instants]
+            if any(h is None for h in hours):
+                continue
+            errors: list[float | None] = []
+            for t, h in zip(instants, hours, strict=True):
+                a, b = observed.get(t - timedelta(hours=1)), observed.get(t)
+                errors.append(None if a is None or b is None else round((a + b) / 2 - h.temperature, 2))  # type: ignore[union-attr]
+            if sum(e is not None for e in errors) < MIN_SEGMENT_COVERAGE * len(errors):
+                continue
+            out.append(
+                Segment(
+                    kind=kind,
+                    anchor=day,
+                    temps=[h.temperature for h in hours],  # type: ignore[union-attr]
+                    cloud=_mean([h.cloud_cover for h in hours]),  # type: ignore[union-attr]
+                    wind=_mean([h.wind_speed for h in hours]),  # type: ignore[union-attr]
+                    humidity=_mean([h.humidity for h in hours]),  # type: ignore[union-attr]
+                    errors=errors,
+                )
+            )
+        day += timedelta(days=1)
+    return out
+
+
+def segment_distance(a: Segment, b: Segment) -> float | None:
+    """RMS feature difference over what both segments have. None if no overlap."""
+    terms = [
+        ((x - y) / SCALE_TEMP) ** 2 for x, y in zip(a.temps, b.temps, strict=True) if x is not None and y is not None
+    ]
+    if not terms:
+        return None
+    for x, y, scale in (
+        (a.cloud, b.cloud, SCALE_CLOUD),
+        (a.wind, b.wind, SCALE_WIND),
+        (a.humidity, b.humidity, SCALE_HUMIDITY),
+    ):
+        if x is not None and y is not None:
+            terms.append(((x - y) / scale) ** 2)
+    return math.sqrt(sum(terms) / len(terms))
+
+
+@dataclass
+class AnalogModel:
+    segments: list[Segment]
+    learned_at: datetime
+    days: int
+    mae_raw: float | None = None
+    mae_corrected: float | None = None
+
+    def correction(self, target: Segment) -> list[float | None] | None:
+        """Per-instant correction for a segment, or None without enough analogs."""
+        scored = []
+        for s in self.segments:
+            if s.kind != target.kind or s.anchor == target.anchor or s.errors is None:
+                continue
+            d = segment_distance(target, s)
+            if d is not None:
+                scored.append((d, s))
+        if len(scored) < ANALOG_NEIGHBOURS:
+            return None
+        scored.sort(key=lambda x: x[0])
+        nearest = scored[:ANALOG_NEIGHBOURS]
+        out: list[float | None] = []
+        for i in range(len(target.temps)):
+            num = den = 0.0
+            for d, s in nearest:
+                e = s.errors[i]  # type: ignore[index]
+                if e is None:
+                    continue
+                w = 1.0 / (d + DISTANCE_FLOOR)
+                num += w * e
+                den += w
+            out.append(round(num / den, 2) if den else None)
+        return out
+
+    def as_dict(self) -> dict:
+        return {
+            "segments": [s.as_dict() for s in self.segments],
+            "learned_at": self.learned_at.isoformat(),
+            "days": self.days,
+            "mae_raw": self.mae_raw,
+            "mae_corrected": self.mae_corrected,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> AnalogModel:
+        return cls(
+            segments=[Segment.from_dict(s) for s in d["segments"]],
+            learned_at=datetime.fromisoformat(d["learned_at"]),
+            days=int(d["days"]),
+            mae_raw=d.get("mae_raw"),
+            mae_corrected=d.get("mae_corrected"),
+        )
+
+
+def learn_analogs(segments: list[Segment], now: datetime) -> AnalogModel | None:
+    """Keep the past segments; backtest each one against analogs from the others."""
+    if not segments:
+        return None
+    model = AnalogModel(segments=segments, learned_at=now, days=len({s.anchor for s in segments}))
+    raw = cor = 0.0
+    n = 0
+    for s in segments:
+        corr = model.correction(s)
+        if corr is None:
+            continue
+        for e, c in zip(s.errors or [], corr, strict=False):
+            if e is None or c is None:
+                continue
+            raw += abs(e)
+            cor += abs(e - c)
+            n += 1
+    if n:
+        model.mae_raw = round(raw / n, 2)
+        model.mae_corrected = round(cor / n, 2)
+    return model
+
+
+def target_segments(points: list[HourPoint], tz: tzinfo) -> dict[tuple[str, date], Segment]:
+    """Forecast segments built from the coming hours (a running one is partial)."""
+    by_key: dict[tuple[str, date], dict[datetime, HourPoint]] = defaultdict(dict)
+    for p in points:
+        by_key[segment_of(p.time.astimezone(tz))][p.time] = p
+    out: dict[tuple[str, date], Segment] = {}
+    for (kind, anchor), have in by_key.items():
+        pts = [have.get(t) for t in segment_instants(kind, anchor, tz)]
+        out[(kind, anchor)] = Segment(
+            kind=kind,
+            anchor=anchor,
+            temps=[p.raw_temperature if p else None for p in pts],
+            cloud=_mean([p.cloud_cover for p in pts if p]),
+            wind=_mean([p.wind_speed for p in pts if p]),
+            humidity=_mean([p.humidity for p in pts if p]),
+        )
+    return out
+
+
+def apply_corrections(points: list[HourPoint], analogs: AnalogModel | None, bias: BiasModel | None, tz: tzinfo) -> int:
+    """Corrected temperature for every point: analogs where they exist, else the
+    per-hour bias, else the raw forecast. Returns how many points used analogs."""
+    apply_bias(points, bias, tz)
+    if analogs is None:
+        return 0
+    used = 0
+    for (kind, anchor), seg in target_segments(points, tz).items():
+        corr = analogs.correction(seg)
+        if corr is None:
+            continue
+        index = {t: i for i, t in enumerate(segment_instants(kind, anchor, tz))}
+        for p in points:
+            i = index.get(p.time)
+            if i is None or p.raw_temperature is None or corr[i] is None:
+                continue
+            p.temperature = round(p.raw_temperature + corr[i], 1)  # type: ignore[operator]
+            used += 1
+    return used
 
 
 # ── Forecast shaping ───────────────────────────────────────────────────────

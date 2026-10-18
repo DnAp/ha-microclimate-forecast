@@ -207,7 +207,14 @@ class MicroclimateWeather(SingleCoordinatorWeatherEntity[MicroclimateCoordinator
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         bias = self.coordinator.bias
-        attrs: dict[str, Any] = {"bias_learned": bias is not None}
+        analogs = self.coordinator.analogs
+        data = self.coordinator.data
+        method = "raw"
+        if data and data.extra.get("analog_points"):
+            method = "analogs"
+        elif bias is not None:
+            method = "per_hour"
+        attrs: dict[str, Any] = {"method": method, "bias_learned": bias is not None}
         if bias is not None:
             attrs.update(
                 {
@@ -215,10 +222,12 @@ class MicroclimateWeather(SingleCoordinatorWeatherEntity[MicroclimateCoordinator
                     "learned_at": bias.learned_at.isoformat(),
                     "learning_days": bias.days,
                     "mae_raw": bias.mae_raw,
-                    "mae_corrected": bias.mae_corrected,
+                    "mae_per_hour": bias.mae_corrected,
                 }
             )
-        data = self.coordinator.data
+        if analogs is not None:
+            attrs["analog_segments"] = len(analogs.segments)
+            attrs["mae_analogs"] = analogs.mae_corrected
         if data and data.extra.get("nowcast_offset") is not None:
             attrs["nowcast_offset"] = data.extra["nowcast_offset"]
         if self.coordinator.learn_error:

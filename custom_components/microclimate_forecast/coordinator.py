@@ -27,11 +27,14 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .model import (
+    AnalogModel,
     BiasModel,
     ForecastData,
-    apply_bias,
+    apply_corrections,
     apply_nowcast,
+    build_past_segments,
     daily_from_hourly,
+    learn_analogs,
     learn_bias,
     pair_samples,
 )
@@ -103,6 +106,7 @@ class MicroclimateCoordinator(TimestampDataUpdateCoordinator[ForecastData]):
         )
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self.bias: BiasModel | None = None
+        self.analogs: AnalogModel | None = None
         self.learn_error: str | None = None
         self._loaded = False
 
@@ -122,11 +126,17 @@ class MicroclimateCoordinator(TimestampDataUpdateCoordinator[ForecastData]):
             return
         self._loaded = True
         stored = await self._store.async_load()
-        if stored and stored.get("bias"):
-            try:
+        if not stored:
+            return
+        try:
+            if stored.get("bias"):
                 self.bias = BiasModel.from_dict(stored["bias"])
-            except (KeyError, TypeError, ValueError):
-                _LOGGER.warning("Stored bias is unreadable; it will be re-learned")
+            if stored.get("analogs"):
+                self.analogs = AnalogModel.from_dict(stored["analogs"])
+        except (KeyError, TypeError, ValueError):
+            # A store from an older version without analogs re-learns at the first update.
+            _LOGGER.warning("Stored model is unreadable; it will be re-learned")
+            self.bias = self.analogs = None
 
     async def async_learn(self) -> None:
         """Re-learn the bias from the station's history. Keeps the old one on failure."""
@@ -144,23 +154,31 @@ class MicroclimateCoordinator(TimestampDataUpdateCoordinator[ForecastData]):
             self.learn_error = f"past forecasts: {err}"
             _LOGGER.warning("Could not fetch past forecasts: %s", err)
             return
-        samples = pair_samples(observed, past, tz)
+        samples = pair_samples(observed, {t: h.temperature for t, h in past.items()}, tz)
         model = learn_bias(samples, now)
         if model is None:
             self.learn_error = "no station history overlapping the past forecasts yet"
             _LOGGER.info("No samples to learn from yet (%s observed hours)", len(observed))
             return
         self.bias = model
+        self.analogs = learn_analogs(build_past_segments(observed, past, tz), now)
         self.learn_error = None
-        await self._store.async_save({"bias": model.as_dict()})
+        await self._store.async_save(
+            {"bias": model.as_dict(), "analogs": self.analogs.as_dict() if self.analogs else None}
+        )
         _LOGGER.debug(
-            "Learned bias over %s days: MAE %.2f → %.2f", model.days, model.mae_raw or 0, model.mae_corrected or 0
+            "Learned over %s days: per-hour MAE %.2f → %.2f, analogs → %s",
+            model.days,
+            model.mae_raw or 0,
+            model.mae_corrected or 0,
+            self.analogs.mae_corrected if self.analogs else None,
         )
 
     async def _async_update_data(self) -> ForecastData:
         await self._async_load()
         now = dt_util.utcnow()
-        if self.bias is None or now - self.bias.learned_at >= RELEARN_INTERVAL:
+        stale = self.bias is None or now - self.bias.learned_at >= RELEARN_INTERVAL
+        if stale or self.analogs is None:
             try:
                 await self.async_learn()
             except Exception as err:  # noqa: BLE001 — a learning failure must not cost the forecast
@@ -175,14 +193,14 @@ class MicroclimateCoordinator(TimestampDataUpdateCoordinator[ForecastData]):
             )
         except OpenMeteoError as err:
             raise UpdateFailed(f"Open-Meteo forecast: {err}") from err
-        apply_bias(hourly, self.bias, tz)
+        analog_points = apply_corrections(hourly, self.analogs, self.bias, tz)
         offset = apply_nowcast(hourly, self._station_now(), now)
         return ForecastData(
             hourly=hourly,
             daily=daily_from_hourly(hourly, daily_meta, tz),
             bias=self.bias,
             fetched_at=now,
-            extra={"nowcast_offset": offset},
+            extra={"nowcast_offset": offset, "analog_points": analog_points},
         )
 
     def _station_now(self) -> float | None:

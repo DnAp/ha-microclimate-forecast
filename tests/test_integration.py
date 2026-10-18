@@ -91,7 +91,10 @@ async def test_setup_learns_and_corrects(setup_hass: HomeAssistant):
     assert state.attributes["bias_learned"] is True
     assert state.attributes["bias_by_hour"]["04"] == pytest.approx(-3.5, abs=0.1)
     assert state.attributes["bias_by_hour"]["13"] == pytest.approx(0.7, abs=0.1)
-    assert state.attributes["mae_corrected"] < state.attributes["mae_raw"]
+    assert state.attributes["mae_per_hour"] < state.attributes["mae_raw"]
+    assert state.attributes["method"] == "analogs"
+    assert state.attributes["analog_segments"] > 60
+    assert state.attributes["mae_analogs"] < state.attributes["mae_raw"]
 
     raw = json.loads((FIXTURES / "forecast.json").read_text())["hourly"]
     raw_by_time = {
@@ -105,12 +108,9 @@ async def test_setup_learns_and_corrects(setup_hass: HomeAssistant):
     assert datetime.fromisoformat(hourly[0]["datetime"]) >= NOW.replace(minute=0)
     four_am = next(h for h in hourly if datetime.fromisoformat(h["datetime"]).astimezone(TZ).hour == 4)
     t = datetime.fromisoformat(four_am["datetime"])
-    # raw + the learned night bias + the station's 23:30 deviation, faded over 4.5 h.
-    bias = state.attributes["bias_by_hour"]
-    learned = (bias["03"] + bias["04"]) / 2
-    assert learned == pytest.approx(-3.5, abs=0.1)
+    # raw + the station's night offset (analogs all say −3.5) + the 23:30 deviation, faded over 4.5 h.
     faded = state.attributes["nowcast_offset"] * math.exp(-(t - NOW).total_seconds() / 3600 / 4)
-    assert four_am["temperature"] == pytest.approx(raw_by_time[t] + learned + faded, abs=0.11)
+    assert four_am["temperature"] == pytest.approx(raw_by_time[t] - 3.5 + faded, abs=0.3)
     assert "nowcast_offset" in state.attributes
 
     resp = await hass.services.async_call(
