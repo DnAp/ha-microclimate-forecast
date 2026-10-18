@@ -76,14 +76,14 @@ automation:
         at: "19:00:00"
     conditions:
       - condition: numeric_state
-        entity_id: sensor.microclimate_night_low
+        entity_id: sensor.microclimate_forecast_night_low
         below: 5
     actions:
       - action: notify.mobile_app_phone
         data:
           message: >
-            Tonight down to {{ states('sensor.microclimate_night_low') }} °C
-            at {{ as_timestamp(state_attr('sensor.microclimate_night_low', 'at')) | timestamp_custom('%H:%M') }}
+            Tonight down to {{ states('sensor.microclimate_forecast_night_low') }} °C
+            at {{ as_timestamp(state_attr('sensor.microclimate_forecast_night_low', 'at')) | timestamp_custom('%H:%M') }}
             — bring the young plants in.
 ```
 
