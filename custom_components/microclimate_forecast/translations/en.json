@@ -1,0 +1,75 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Microclimate Forecast",
+        "description": "Open-Meteo forecast corrected to match your own outdoor sensor. Location is taken from Home Assistant's settings.",
+        "data": {
+          "name": "Name",
+          "temperature_entity": "Outdoor temperature sensor",
+          "humidity_entity": "Humidity sensor",
+          "pressure_entity": "Pressure sensor",
+          "wind_speed_entity": "Wind speed sensor",
+          "wind_gust_entity": "Wind gust sensor",
+          "wind_bearing_entity": "Wind direction sensor",
+          "dew_point_entity": "Dew point sensor",
+          "uv_index_entity": "UV index sensor",
+          "learning_days": "Learning window"
+        },
+        "data_description": {
+          "temperature_entity": "The station whose readings the forecast should match. Its recorder history is what the correction is learned from.",
+          "humidity_entity": "Optional. Shown as current humidity.",
+          "pressure_entity": "Optional.",
+          "wind_speed_entity": "Optional.",
+          "wind_gust_entity": "Optional.",
+          "wind_bearing_entity": "Optional, degrees.",
+          "dew_point_entity": "Optional.",
+          "uv_index_entity": "Optional.",
+          "learning_days": "How many past days of station history to learn the correction from (7–90)."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This sensor is already used by a Microclimate Forecast entry."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Microclimate Forecast options",
+        "data": {
+          "temperature_entity": "Outdoor temperature sensor",
+          "humidity_entity": "Humidity sensor",
+          "pressure_entity": "Pressure sensor",
+          "wind_speed_entity": "Wind speed sensor",
+          "wind_gust_entity": "Wind gust sensor",
+          "wind_bearing_entity": "Wind direction sensor",
+          "dew_point_entity": "Dew point sensor",
+          "uv_index_entity": "UV index sensor",
+          "learning_days": "Learning window"
+        },
+        "data_description": {
+          "temperature_entity": "The station whose readings the forecast should match. Its recorder history is what the correction is learned from.",
+          "humidity_entity": "Optional. Shown as current humidity.",
+          "pressure_entity": "Optional.",
+          "wind_speed_entity": "Optional.",
+          "wind_gust_entity": "Optional.",
+          "wind_bearing_entity": "Optional, degrees.",
+          "dew_point_entity": "Optional.",
+          "uv_index_entity": "Optional.",
+          "learning_days": "How many past days of station history to learn the correction from (7–90)."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "night_low": {
+        "name": "Night low"
+      },
+      "day_high": {
+        "name": "Day high"
+      }
+    }
+  }
+}

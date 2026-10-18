@@ -1,0 +1,75 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Микроклимат-прогноз",
+        "description": "Прогноз Open-Meteo, подогнанный под ваш уличный датчик. Координаты берутся из настроек Home Assistant.",
+        "data": {
+          "name": "Название",
+          "temperature_entity": "Датчик уличной температуры",
+          "humidity_entity": "Датчик влажности",
+          "pressure_entity": "Датчик давления",
+          "wind_speed_entity": "Датчик скорости ветра",
+          "wind_gust_entity": "Датчик порывов ветра",
+          "wind_bearing_entity": "Датчик направления ветра",
+          "dew_point_entity": "Датчик точки росы",
+          "uv_index_entity": "Датчик UV-индекса",
+          "learning_days": "Окно обучения"
+        },
+        "data_description": {
+          "temperature_entity": "Станция, под которую подгоняется прогноз. Поправка учится по её истории в recorder.",
+          "humidity_entity": "Необязательно. Показывается как текущая влажность.",
+          "pressure_entity": "Необязательно.",
+          "wind_speed_entity": "Необязательно.",
+          "wind_gust_entity": "Необязательно.",
+          "wind_bearing_entity": "Необязательно, градусы.",
+          "dew_point_entity": "Необязательно.",
+          "uv_index_entity": "Необязательно.",
+          "learning_days": "Сколько прошлых дней истории станции брать для поправки (7–90)."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Этот датчик уже используется другой записью."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Настройки микроклимат-прогноза",
+        "data": {
+          "temperature_entity": "Датчик уличной температуры",
+          "humidity_entity": "Датчик влажности",
+          "pressure_entity": "Датчик давления",
+          "wind_speed_entity": "Датчик скорости ветра",
+          "wind_gust_entity": "Датчик порывов ветра",
+          "wind_bearing_entity": "Датчик направления ветра",
+          "dew_point_entity": "Датчик точки росы",
+          "uv_index_entity": "Датчик UV-индекса",
+          "learning_days": "Окно обучения"
+        },
+        "data_description": {
+          "temperature_entity": "Станция, под которую подгоняется прогноз. Поправка учится по её истории в recorder.",
+          "humidity_entity": "Необязательно. Показывается как текущая влажность.",
+          "pressure_entity": "Необязательно.",
+          "wind_speed_entity": "Необязательно.",
+          "wind_gust_entity": "Необязательно.",
+          "wind_bearing_entity": "Необязательно, градусы.",
+          "dew_point_entity": "Необязательно.",
+          "uv_index_entity": "Необязательно.",
+          "learning_days": "Сколько прошлых дней истории станции брать для поправки (7–90)."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "night_low": {
+        "name": "Минимум ночью"
+      },
+      "day_high": {
+        "name": "Максимум днём"
+      }
+    }
+  }
+}
